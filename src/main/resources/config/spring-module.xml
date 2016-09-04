@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:batch="http://www.springframework.org/schema/batch"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+       http://www.springframework.org/schema/batch http://www.springframework.org/schema/batch/spring-batch.xsd
+       http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd">
+
+    <context:property-placeholder location="classpath:config/application.properties" ignore-resource-not-found="true"/>
+
+    <batch:job id="job">
+        <batch:step id="startJob" next="loadEventsStep">
+            <batch:tasklet>
+                <bean class="cxp.ingest.StartJobTasklet"/>
+            </batch:tasklet>
+        </batch:step>
+        <batch:step id="loadEventsStep" next="endJob">
+            <batch:tasklet>
+                <batch:chunk reader="jdbcCursorItemReader" processor="itemProcessor" writer="flatFileItemWriter" commit-interval="1000" retry-limit="1"/>
+            </batch:tasklet>
+        </batch:step>
+        <batch:step id="endJob">
+            <batch:tasklet>
+                <bean class="cxp.ingest.EndJobTasklet">
+                    <property name="processingFolder" value="${processing-folder}"/>
+                    <property name="testProcessingFolder" value="${test-processing-folder}"/>
+                    <property name="append" value="true"/>
+                    <property name="writePropertiesFile" value="false"/>
+                    <property name="metadataProvider" ref="metadataProvider"/>
+                </bean>
+            </batch:tasklet>
+        </batch:step>
+    </batch:job>
+
+    <bean id="jdbcCursorItemReader" class="org.springframework.batch.item.database.JdbcCursorItemReader">
+        <property name="dataSource" ref="sourceDataSource"/>
+        <!-- example query reading back from the events table -->
+        <property name="sql" value="select customer_id, value, event_ts from cxp.events limit 100"/>
+        <property name="verifyCursorPosition" value="${batch.verify.cursor.position}"/>
+        <property name="rowMapper">
+            <!--
+                RowMapper implementation that creates a java.util.Map for each row, representing all
+                columns as key-value pairs: one entry for each column, with the column name as key.
+                By default, ColumnMapRowMapper will try to build a linked Map with case-insensitive
+                keys, to preserve column order as well as allow any casing to be used for column names.
+                This requires Commons Collections on the classpath (which will be autodetected). Else,
+                the fallback is a standard linked HashMap, which will still preserve column order but
+                requires the application to specify the column names in the same casing as exposed by
+                the driver.
+            -->
+            <bean class="org.springframework.jdbc.core.ColumnMapRowMapper"/>
+        </property>
+    </bean>
+
+    <bean id="itemProcessor" class="cxp.ingest.MetadataDrivenItemProcessor" scope="step">
+        <property name="transformer" ref="transformer"/>
+    </bean>
+
+    <bean id="flatFileItemWriter" class="cxp.ingest.MetadataDrivenFlatFileItemWriter" scope="step">
+        <property name="appendAllowed" value="true"/>
+        <property name="processingFolder" value="${processing-folder}"/>
+        <property name="testProcessingFolder" value="${test-processing-folder}"/>
+        <property name="metadataProvider" ref="metadataProvider"/>
+    </bean>
+
+    <bean id="flatFilePropertyWriter" class="cxp.ingest.MetadataDrivenFlatFilePropertyWriter" scope="step">
+        <property name="appendAllowed" value="true"/>
+        <property name="processingFolder" value="${processing-folder}"/>
+        <property name="testProcessingFolder" value="${test-processing-folder}"/>
+        <property name="metadataProvider" ref="metadataProvider"/>
+    </bean>
+
+    <bean id="compositeWriter" class="org.springframework.batch.item.support.CompositeItemWriter">
+        <property name="delegates">
+            <list>
+                <ref bean="flatFileItemWriter"/>
+                <ref bean="flatFilePropertyWriter"/>
+            </list>
+        </property>
+    </bean>
+
+    <bean id="jdbcBatchItemWriter" class="cxp.ingest.MetadataDrivenJdbcBatchItemWriter" scope="step">
+        <property name="jdbcTemplate" ref="jdbcTemplate"/>
+        <property name="metadataProvider" ref="metadataProvider"/>
+    </bean>
+
+    <bean id="transformer" class="cxp.ingest.MetadataDrivenItemTransformerImpl" scope="step">
+        <property name="parser">
+            <bean class="org.springframework.expression.spel.standard.SpelExpressionParser"/>
+        </property>
+        <property name="metadataProvider" ref="metadataProvider"/>
+    </bean>
+
+    <bean id="metadataProvider" class="cxp.ingest.MetadataProviderImpl">
+        <property name="datasetUrl" value="${dataset-lookup-url}"/>
+        <property name="idResolutionUrl" value="${customer-id-resolution-url}"/>
+        <property name="jobUrl" value="${jobs-url}"/>
+        <property name="testJobUrl" value="${test-jobs-url}"/>
+        <property name="dateFormatsUrl" value="${date-formats-url}"/>
+        <property name="jdbcTemplate" ref="jdbcTemplate"/>
+    </bean>
+
+    <bean id="jdbcTemplate" class="org.springframework.jdbc.core.JdbcTemplate">
+        <property name="dataSource" ref="metastoreDataSource"/>
+    </bean>
+
+    <bean id="metastoreDataSource" class="org.apache.tomcat.jdbc.pool.DataSource" destroy-method="close">
+        <property name="driverClassName" value="${cxp.datasource.driver-class-name}"/>
+        <property name="url" value="${cxp.datasource.url}"/>
+        <property name="username" value="${cxp.datasource.username}"/>
+        <property name="password" value="${cxp.datasource.password}"/>
+    </bean>
+
+    <bean id="sourceDataSource" class="org.apache.tomcat.jdbc.pool.DataSource" destroy-method="close">
+        <property name="driverClassName" value="${source.datasource.driver-class-name}"/>
+        <property name="url" value="${source.datasource.url}"/>
+        <property name="username" value="${source.datasource.username}"/>
+        <property name="password" value="${source.datasource.password}"/>
+    </bean>
+
+</beans>
